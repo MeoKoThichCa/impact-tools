@@ -10,6 +10,22 @@ import static org.junit.jupiter.api.Assertions.*;
 import static com.demo.impact.Model.*;
 
 class ImpactToolTest {
+    @Test void queryWritesMarkdownAndOfflineHtml() throws Exception {
+        springFixture();
+        Path output = temp.resolve("impact-check.md");
+        assertEquals(0, cli("query", "--repo", repo.toString(), "--method", "p.TaskService#validDto(java.lang.String)",
+                "--out", output.toString()), err());
+        String markdown = Files.readString(output);
+        String html = Files.readString(temp.resolve("impact-check.html"));
+        for (String heading : List.of("API có thể bị ảnh hưởng", "Cây lời gọi ngược", "Diagnostics và giới hạn")) {
+            assertTrue(markdown.contains(heading));
+            assertTrue(html.contains(heading));
+        }
+        assertFalse(markdown.contains("## Method gọi trực tiếp và gián tiếp"));
+        assertFalse(html.contains("Method gọi trực tiếp và gián tiếp"));
+        assertTrue(html.contains("<details open>"));
+        assertTrue(html.contains("/v1/tasks"));
+    }
     @TempDir Path temp;
     private Path repo;
     private ByteArrayOutputStream stdout, stderr;
@@ -197,7 +213,9 @@ class ImpactToolTest {
                 """);
         Snapshot s = index(false); ImpactQuery q = new ImpactQuery(s);
         String report = q.report(q.select("target"), 10);
-        assertEquals(2, report.lines().filter(l -> l.startsWith("| Graph\\#top() | ")).count());
+        assertEquals(2, report.lines().filter(l -> l.stripLeading().startsWith("- Graph\\#top() — ")).count());
+        assertTrue(report.contains("**Có thể**"));
+        assertTrue(report.contains("**Gọi vòng**"));
         assertEquals(0, report.lines().filter(l -> l.startsWith("| Graph\\#target() | ")).count());
         assertFalse(report.contains("còn cạnh hợp lệ chưa duyệt"));
         assertTrue(q.report(q.select("target"), 1).contains("còn cạnh hợp lệ chưa duyệt"));

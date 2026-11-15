@@ -68,19 +68,9 @@ public final class ImpactQuery {
                         .append(chain(route, target.id())).append(" |\n");
             }
         }
-        out.append("\n## Method gọi trực tiếp và gián tiếp\n\n");
-        List<Route> callers = visited.values().stream().filter(r -> !r.state().method().equals(target.id()))
-                .sorted(Comparator.comparingInt((Route r) -> r.calls().size()).thenComparing(r -> r.state().method()).thenComparing(r -> r.state().possible())).toList();
-        if (callers.isEmpty()) out.append("Không tìm thấy caller trong phạm vi độ sâu đã chọn.\n");
-        else {
-            out.append("| Chữ ký | Độ sâu | Vị trí lời gọi | Mức bằng chứng | Chuỗi gọi |\n|---|---|---|---|---|\n");
-            for (Route route : callers) {
-                Call call = route.calls().get(0);
-                out.append("| ").append(escape(route.state().method())).append(" | ").append(route.calls().size()).append(" | ")
-                        .append(escape(call.source())).append(':').append(call.line()).append(':').append(call.column())
-                        .append(" | ").append(evidence(route)).append(" | ").append(chain(route, target.id())).append(" |\n");
-            }
-        }
+        // Tạm ẩn bảng caller trong cả Markdown và HTML. Bỏ comment dòng sau để bật lại.
+        // appendCallerTable(out, target, visited);
+        appendReverseTree(out, target.id(), depth, incoming);
         Set<String> visitedMethods = new HashSet<>(); visited.keySet().forEach(s -> visitedMethods.add(s.method()));
         Set<String> sources = new HashSet<>(); snapshot.methods().stream().filter(m -> visitedMethods.contains(m.id())).forEach(m -> sources.add(m.source()));
         List<Problem> relevant = snapshot.problems().stream().filter(p -> visitedMethods.contains(p.caller()) ||
@@ -103,6 +93,72 @@ public final class ImpactQuery {
                 .append("- Báo cáo giữ một đường ngắn nhất cho mỗi method và mức bằng chứng; mỗi endpoint ưu tiên đường đã phân giải tĩnh.\n")
                 .append("- Chưa có tên tính năng nghiệp vụ do team cung cấp; chỉ hiển thị endpoint và handler. Hành vi thực tế còn phụ thuộc thay đổi code, đầu vào và nhánh thực thi.\n");
         return out.toString();
+    }
+    private static void appendCallerTable(StringBuilder out, Method target, Map<State, Route> visited) {
+        out.append("\n## Method gọi trực tiếp và gián tiếp\n\n");
+        List<Route> callers = visited.values().stream().filter(r -> !r.state().method().equals(target.id()))
+                .sorted(Comparator.comparingInt((Route r) -> r.calls().size()).thenComparing(r -> r.state().method()).thenComparing(r -> r.state().possible())).toList();
+        if (callers.isEmpty()) out.append("Không tìm thấy caller trong phạm vi độ sâu đã chọn.\n");
+        else {
+            out.append("| Chữ ký | Độ sâu | Vị trí lời gọi | Mức bằng chứng | Chuỗi gọi |\n|---|---|---|---|---|\n");
+            for (Route route : callers) {
+                Call call = route.calls().get(0);
+                out.append("| ").append(escape(route.state().method())).append(" | ").append(route.calls().size()).append(" | ")
+                        .append(escape(call.source())).append(':').append(call.line()).append(':').append(call.column())
+                        .append(" | ").append(evidence(route)).append(" | ").append(chain(route, target.id())).append(" |\n");
+            }
+        }
+    }
+    private record TreeNode(String method, int level, List<Call> edges, boolean leaving) {}
+    private void appendReverseTree(StringBuilder out, String target, int depth, Map<String, List<Call>> incoming) {
+        out.append("\n## Cây lời gọi ngược\n\n");
+        Map<String, List<Endpoint>> handlers = new HashMap<>();
+        for (Endpoint endpoint : sorted(snapshot.endpoints(), ENDPOINTS))
+            handlers.computeIfAbsent(endpoint.handler(), ignored -> new ArrayList<>()).add(endpoint);
+        Set<String> branch = new HashSet<>();
+        Deque<TreeNode> pending = new ArrayDeque<>();
+        pending.push(new TreeNode(target, 0, List.of(), false));
+        while (!pending.isEmpty()) {
+            TreeNode node = pending.pop();
+            if (node.leaving()) { branch.remove(node.method()); continue; }
+            String indent = "    ".repeat(node.level());
+            out.append(indent).append("- ").append(escape(node.method()));
+            if (!node.edges().isEmpty()) {
+                out.append(" — vị trí gọi: ");
+                StringJoiner sites = new StringJoiner("; ");
+                for (Call edge : node.edges()) {
+                    String site = escape(edge.source()) + ":" + edge.line() + ":" + edge.column();
+                    if (edge.kind() != Kind.DECLARED) site += " (**Có thể**, " + edge.kind() + ")";
+                    sites.add(site);
+                }
+                out.append(sites);
+            }
+            Set<EndpointKey> shown = new HashSet<>();
+            for (Endpoint endpoint : handlers.getOrDefault(node.method(), List.of())) {
+                if (!shown.add(new EndpointKey(endpoint.verb(), endpoint.route(), endpoint.handler(), endpoint.params()))) continue;
+                out.append(" — ").append(escape(endpoint.verb())).append(' ').append(escape(displayRoute(endpoint)));
+                if (!endpoint.params().isEmpty())
+                    out.append(" (Params: ").append(escape(String.join(", ", endpoint.params()))).append(')');
+            }
+            if (branch.contains(node.method())) {
+                out.append(" — **Gọi vòng**\n");
+                continue;
+            }
+            out.append('\n');
+            List<Call> edges = incoming.getOrDefault(node.method(), List.of());
+            if (node.level() == depth) {
+                if (!edges.isEmpty()) out.append(indent).append("    - **Giới hạn độ sâu: còn nhánh chưa hiển thị.**\n");
+                continue;
+            }
+            // Group only within this parent: shared callers remain visible on every branch.
+            Map<String, List<Call>> callers = new TreeMap<>();
+            for (Call edge : edges) callers.computeIfAbsent(edge.caller(), ignored -> new ArrayList<>()).add(edge);
+            branch.add(node.method());
+            pending.push(new TreeNode(node.method(), node.level(), List.of(), true));
+            List<String> ids = new ArrayList<>(callers.keySet());
+            Collections.reverse(ids);
+            for (String caller : ids) pending.push(new TreeNode(caller, node.level() + 1, callers.get(caller), false));
+        }
     }
     private static String displayRoute(Endpoint endpoint) {
         if (endpoint.params().isEmpty() || !endpoint.params().stream().allMatch(ImpactQuery::isSimpleEquality)) return endpoint.route();

@@ -66,10 +66,14 @@ public final class Main {
                 ImpactQuery query = new ImpactQuery(snapshot);
                 Path output = Path.of(options.getOrDefault("--out", "impact.md")).toAbsolutePath().normalize();
                 String report = query.report(query.select(options.get("--method")), depth);
+                Path htmlOutput = HtmlReport.outputPath(output);
+                String html = HtmlReport.render(report);
                 SnapshotStore.atomicWrite(output, report);
+                SnapshotStore.atomicWrite(htmlOutput, html);
                 if (snapshot.manifest().getProperty("status").equals("PARTIAL")) stderr.println("Cảnh báo: snapshot PARTIAL; kết quả có thể chưa đầy đủ.");
                 if (report.contains("còn cạnh hợp lệ chưa duyệt")) stderr.println("Cảnh báo: truy vấn bị giới hạn độ sâu.");
                 stdout.println(output);
+                stdout.println(htmlOutput);
             }
             return 0;
         } catch (ToolException ex) { stderr.println(ex.getMessage()); return ex.exitCode(); }
